@@ -123,7 +123,9 @@ impl DB {
 
         if save_manifest {
             ve.set_log_num(db.log_num.unwrap_or(0));
-            db.vset.borrow_mut().log_and_apply(&mut ve)?;
+            if !db.opt.read_only {
+                db.vset.borrow_mut().log_and_apply(&mut ve)?;
+            }
         }
 
         if !db.opt.read_only {
@@ -192,36 +194,38 @@ impl DB {
 
         // Recover from all log files not in the descriptor.
         let mut max_seq = 0;
-        let filenames = self.opt.env.children(&self.path)?;
-        let mut expected = self.vset.borrow().live_files();
-        let mut log_files = vec![];
+        if !self.opt.read_only {
+            let filenames = self.opt.env.children(&self.path)?;
+            let mut expected = self.vset.borrow().live_files();
+            let mut log_files = vec![];
 
-        for file in &filenames {
-            if let Ok((num, typ)) = parse_file_name(file) {
-                expected.remove(&num);
-                if typ == FileType::Log
-                    && (num >= self.vset.borrow().log_num || num == self.vset.borrow().prev_log_num)
-                {
-                    log_files.push(num);
+            for file in &filenames {
+                if let Ok((num, typ)) = parse_file_name(file) {
+                    expected.remove(&num);
+                    if typ == FileType::Log
+                        && (num >= self.vset.borrow().log_num || num == self.vset.borrow().prev_log_num)
+                    {
+                        log_files.push(num);
+                    }
                 }
             }
-        }
-        if !expected.is_empty() {
-            log!(self.opt.log, "Missing at least these files: {:?}", expected);
-            return err(StatusCode::Corruption, "missing live files (see log)");
-        }
+            if !expected.is_empty() {
+                log!(self.opt.log, "Missing at least these files: {:?}", expected);
+                return err(StatusCode::Corruption, "missing live files (see log)");
+            }
 
-        log_files.sort();
-        for i in 0..log_files.len() {
-            let (save_manifest_, max_seq_) =
-                self.recover_log_file(log_files[i], i == log_files.len() - 1, ve)?;
-            if save_manifest_ {
-                save_manifest = true;
+            log_files.sort();
+            for i in 0..log_files.len() {
+                let (save_manifest_, max_seq_) =
+                    self.recover_log_file(log_files[i], i == log_files.len() - 1, ve)?;
+                if save_manifest_ {
+                    save_manifest = true;
+                }
+                if max_seq_ > max_seq {
+                    max_seq = max_seq_;
+                }
+                self.vset.borrow_mut().mark_file_number_used(log_files[i]);
             }
-            if max_seq_ > max_seq {
-                max_seq = max_seq_;
-            }
-            self.vset.borrow_mut().mark_file_number_used(log_files[i]);
         }
 
         if self.vset.borrow().last_seq < max_seq {

@@ -563,8 +563,7 @@ impl VersionSet {
         assert!(self.current.is_some());
 
         let mut current = read_current_file(self.opt.env.as_ref().as_ref(), &self.dbname)?;
-        let len = current.len();
-        current.truncate(len - 1);
+        current = current.trim_end().to_string();
         let current = Path::new(&current);
 
         let descfilename = self.dbname.join(current);
