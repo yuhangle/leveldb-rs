@@ -121,25 +121,27 @@ impl DB {
         let mut ve = VersionEdit::new();
         let save_manifest = db.recover(&mut ve)?;
 
-        // Create log file if an old one is not being reused.
-        if db.log.is_none() {
-            let lognum = db.vset.borrow_mut().new_file_number();
-            let logfile = db
-                .opt
-                .env
-                .open_writable_file(Path::new(&log_file_name(&db.name, lognum)))?;
-            ve.set_log_num(lognum);
-            db.log = Some(LogWriter::new(BufWriter::new(logfile)));
-            db.log_num = Some(lognum);
-        }
+        if !db.opt.read_only {
+            // Create log file if an old one is not being reused.
+            if db.log.is_none() {
+                let lognum = db.vset.borrow_mut().new_file_number();
+                let logfile = db
+                    .opt
+                    .env
+                    .open_writable_file(Path::new(&log_file_name(&db.name, lognum)))?;
+                ve.set_log_num(lognum);
+                db.log = Some(LogWriter::new(BufWriter::new(logfile)));
+                db.log_num = Some(lognum);
+            }
 
-        if save_manifest {
-            ve.set_log_num(db.log_num.unwrap_or(0));
-            db.vset.borrow_mut().log_and_apply(ve)?;
-        }
+            if save_manifest {
+                ve.set_log_num(db.log_num.unwrap_or(0));
+                db.vset.borrow_mut().log_and_apply(ve)?;
+            }
 
-        db.delete_obsolete_files()?;
-        db.maybe_do_compaction()?;
+            db.delete_obsolete_files()?;
+            db.maybe_do_compaction()?;
+        }
         Ok(db)
     }
 
@@ -168,11 +170,13 @@ impl DB {
             return err(StatusCode::AlreadyExists, "database already exists");
         }
 
-        let _ = self.opt.env.mkdir(Path::new(&self.path));
+        if !self.opt.read_only {
+            let _ = self.opt.env.mkdir(Path::new(&self.path));
+        }
         self.acquire_lock()?;
 
         if let Err(e) = read_current_file(self.opt.env.as_ref().as_ref(), &self.path) {
-            if e.code == StatusCode::NotFound && self.opt.create_if_missing {
+            if e.code == StatusCode::NotFound && self.opt.create_if_missing && !self.opt.read_only {
                 self.initialize_db()?;
             } else {
                 return err(

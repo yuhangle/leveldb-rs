@@ -41,6 +41,9 @@ pub struct Options {
     pub reuse_logs: bool,
     pub reuse_manifest: bool,
     pub filter_policy: filter::BoxedFilterPolicy,
+    /// If true, open the database in read-only mode.
+    /// No log files, manifests, or compactions will be written.
+    pub read_only: bool,
 }
 
 #[cfg(feature = "fs")]
@@ -69,6 +72,7 @@ impl Default for Options {
             compressor: 0,
             compressor_list: Rc::new(CompressorList::default()),
             filter_policy: Rc::new(Box::new(filter::BloomPolicy::new(DEFAULT_BITS_PER_KEY))),
+            read_only: false,
         }
     }
 }
