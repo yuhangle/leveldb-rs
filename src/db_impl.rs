@@ -172,8 +172,8 @@ impl DB {
 
         if !self.opt.read_only {
             let _ = self.opt.env.mkdir(Path::new(&self.path));
+            self.acquire_lock()?;
         }
-        self.acquire_lock()?;
 
         if let Err(e) = read_current_file(self.opt.env.as_ref().as_ref(), &self.path) {
             if e.code == StatusCode::NotFound && self.opt.create_if_missing && !self.opt.read_only {
