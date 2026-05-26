@@ -478,7 +478,7 @@ impl VersionSet {
 
     /// log_and_apply merges the given edit with the current state and generates a new version. It
     /// writes the VersionEdit to the manifest.
-    pub fn log_and_apply(&mut self, mut edit: VersionEdit) -> Result<()> {
+    pub fn log_and_apply(&mut self, edit: &mut VersionEdit) -> Result<()> {
         assert!(self.current.is_some());
 
         if edit.log_number.is_none() {
@@ -501,31 +501,31 @@ impl VersionSet {
         }
         self.finalize(&mut v);
 
-        if self.descriptor_log.is_none() {
-            let descname = manifest_file_name(&self.dbname, self.manifest_num);
-            edit.set_next_file(self.next_file_num);
-            self.descriptor_log = Some(LogWriter::new(
-                self.opt.env.open_writable_file(Path::new(&descname))?,
-            ));
-            self.write_snapshot()?;
-        }
+        if !self.opt.read_only {
+            if self.descriptor_log.is_none() {
+                let descname = manifest_file_name(&self.dbname, self.manifest_num);
+                edit.set_next_file(self.next_file_num);
+                self.descriptor_log = Some(LogWriter::new(
+                    self.opt.env.open_writable_file(Path::new(&descname))?,
+                ));
+                self.write_snapshot()?;
+            }
 
-        let encoded = edit.encode();
-        if let Some(ref mut lw) = self.descriptor_log {
-            lw.add_record(&encoded)?;
-            lw.flush()?;
+            let encoded = edit.encode();
+            if let Some(ref mut lw) = self.descriptor_log {
+                lw.add_record(&encoded)?;
+                lw.flush()?;
+            }
+            set_current_file(
+                self.opt.env.as_ref().as_ref(),
+                &self.dbname,
+                self.manifest_num,
+            )?;
         }
-        set_current_file(
-            self.opt.env.as_ref().as_ref(),
-            &self.dbname,
-            self.manifest_num,
-        )?;
 
         self.add_version(v);
-        // log_number was set above.
         self.log_num = edit.log_number.unwrap();
 
-        // TODO: Roll back written files if something went wrong.
         Ok(())
     }
 
@@ -1139,7 +1139,7 @@ mod tests {
                 ..Default::default()
             };
             ve.add_file(1, fmd);
-            vs.log_and_apply(ve).unwrap();
+            vs.log_and_apply(&mut ve).unwrap();
 
             assert!(opt.env.exists(&Path::new("db").join("CURRENT")).unwrap());
             assert!(opt

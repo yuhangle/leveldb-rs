@@ -121,6 +121,11 @@ impl DB {
         let mut ve = VersionEdit::new();
         let save_manifest = db.recover(&mut ve)?;
 
+        if save_manifest {
+            ve.set_log_num(db.log_num.unwrap_or(0));
+            db.vset.borrow_mut().log_and_apply(&mut ve)?;
+        }
+
         if !db.opt.read_only {
             // Create log file if an old one is not being reused.
             if db.log.is_none() {
@@ -132,11 +137,6 @@ impl DB {
                 ve.set_log_num(lognum);
                 db.log = Some(LogWriter::new(BufWriter::new(logfile)));
                 db.log_num = Some(lognum);
-            }
-
-            if save_manifest {
-                ve.set_log_num(db.log_num.unwrap_or(0));
-                db.vset.borrow_mut().log_and_apply(ve)?;
             }
 
             db.delete_obsolete_files()?;
@@ -672,7 +672,7 @@ impl DB {
             compaction.edit().delete_file(level, num);
             compaction.edit().add_file(level + 1, f);
 
-            let r = self.vset.borrow_mut().log_and_apply(compaction.into_edit());
+            let mut e = compaction.into_edit(); let r = self.vset.borrow_mut().log_and_apply(&mut e);
             if let Err(e) = r {
                 log!(self.opt.log, "trivial move failed: {}", e);
                 Err(e)
@@ -726,7 +726,7 @@ impl DB {
             return Err(e);
         }
         ve.set_log_num(self.log_num.unwrap_or(0));
-        self.vset.borrow_mut().log_and_apply(ve)?;
+        self.vset.borrow_mut().log_and_apply(&mut ve)?;
         if let Err(e) = self.delete_obsolete_files() {
             log!(self.opt.log, "Error deleting obsolete files: {}", e);
         }
@@ -952,9 +952,10 @@ impl DB {
         for output in &cs.outputs {
             cs.compaction.edit().add_file(level + 1, output.clone());
         }
+        let mut edit = cs.compaction.into_edit();
         self.vset
             .borrow_mut()
-            .log_and_apply(cs.compaction.into_edit())
+            .log_and_apply(&mut edit)
     }
 }
 
