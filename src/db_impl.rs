@@ -122,7 +122,7 @@ impl DB {
         let save_manifest = db.recover(&mut ve)?;
 
         if save_manifest {
-            ve.set_log_num(db.log_num.unwrap_or(0));
+            ve.set_log_num(db.vset.borrow().log_num);
             if !db.opt.read_only {
                 db.vset.borrow_mut().log_and_apply(&mut ve)?;
             }
