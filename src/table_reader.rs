@@ -317,22 +317,35 @@ impl LdbIterator for TableIterator {
     // A call to valid() after seeking is necessary to ensure that the seek worked (e.g., no error
     // while reading from disk)
     fn seek(&mut self, to: &[u8]) {
-        // first seek in index block, rewind by one entry (so we get the next smaller index entry),
-        // then set current_block and seek there
         self.index_block.seek(to);
 
-        // It's possible that this is a seek past-last; reset in that case.
-        if let Some((past_block, handle)) = current_key_val(&self.index_block) {
-            if self.table.opt.cmp.cmp(to, &past_block) <= Ordering::Equal {
-                // ok, found right block: continue
-                if let Ok(()) = self.load_block(&handle) {
-                    // current_block is always set if load_block() returned Ok.
-                    self.current_block.as_mut().unwrap().seek(to);
+        // index_block.seek() returns the first index entry whose key is >= to. The data block it
+        // points to is then searched. A block index entry is the *shortest separator* between the
+        // last key of its block and the first key of the next block, so it can be >= to even when
+        // the whole data block only contains keys < to (target falls into the gap between the
+        // block's last key and its index separator). In that case the entry is not in this block
+        // but in one of the following blocks, so keep advancing through the index until a data
+        // block yields a key >= to (equivalent of LevelDB's SkipEmptyDataBlocksForward).
+        while let Some((past_block, handle)) = current_key_val(&self.index_block) {
+            // A seek past the last entry makes index_block invalid, so this only guards against
+            // surprising index semantics; treat it as not found.
+            if self.table.opt.cmp.cmp(to, &past_block) > Ordering::Equal {
+                break;
+            }
+            if let Ok(()) = self.load_block(&handle) {
+                // current_block is always set if load_block() returned Ok.
+                self.current_block.as_mut().unwrap().seek(to);
+                if self.valid() {
                     return;
                 }
             }
+            // No key >= to in this data block: release it and try the next one.
+            self.current_block = None;
+            if !self.index_block.advance() {
+                break;
+            }
         }
-        // Reached in case of failure.
+        // Reached in case of failure or seek past last.
         self.reset();
     }
 
@@ -794,5 +807,28 @@ mod tests {
 
             panic!("Should have hit 5th record in table!");
         }
+    }
+
+    #[test]
+    fn test_table_iterator_seek_across_block_gap() {
+        // build_data() produces three data blocks:
+        //   block 1: abc abd bcd, block 2: bsr xyz xzz, block 3: zzz
+        // The index key of block 1 is the shortest separator between its last key (bcd) and the
+        // first key of block 2 (bsr), i.e. "bd". Seeking "bd" selects block 1 (index key >= "bd")
+        // although block 1 only contains keys < "bd"; the next matching key ("bsr") lives in
+        // block 2. The iterator must skip forward to block 2 instead of turning invalid.
+        let (src, size) = build_table(build_data());
+        let bc = share(Cache::new(128));
+        let table = Table::new_raw(options::for_test(), bc, wrap_buffer(src), size).unwrap();
+        let mut iter = table.iter();
+
+        iter.seek(b"bd");
+        assert!(iter.valid(), "seek into the inter-block gap must not invalidate the iterator");
+        let (k, _) = current_key_val(&iter).unwrap();
+        assert_eq!(k.as_ref() as &[u8], &b"bsr"[..]);
+
+        // Seek past the last entry still turns invalid.
+        iter.seek(b"zzzz");
+        assert!(!iter.valid());
     }
 }
