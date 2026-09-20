@@ -639,12 +639,15 @@ impl DB {
         // Compact memtable.
         self.make_room_for_write(true)?;
 
-        let mut ifrom = LookupKey::new(from, MAX_SEQUENCE_NUMBER)
-            .internal_key()
-            .to_vec();
         let iend = LookupKey::new_full(to, 0, ValueType::TypeDeletion);
 
         for l in 0..max_level + 1 {
+            // Each level must be scanned from the original range start. Reusing
+            // the largest key from the previous level would skip all files in
+            // the next level whose keys sort before that point.
+            let mut ifrom = LookupKey::new(from, MAX_SEQUENCE_NUMBER)
+                .internal_key()
+                .to_vec();
             loop {
                 let c_ = self
                     .vset
@@ -1388,6 +1391,61 @@ mod tests {
         assert_eq!(b"val2".to_vec(), db.get(b"cab").unwrap());
         assert_eq!(b"val3".to_vec(), db.get(b"aba").unwrap());
         assert_eq!(b"val3".to_vec(), db.get(b"fab").unwrap());
+    }
+
+    #[test]
+    fn test_db_impl_compact_range_resets_each_level() {
+        let (mut db, _) = build_db();
+
+        // Rearrange the existing files into disjoint key ranges so that the
+        // lower-level compaction advances past files in higher levels.
+        let files = {
+            let current = db.current();
+            let current = current.borrow();
+            let mut files = Vec::new();
+            for level in 0..NUM_LEVELS {
+                for file in &current.files[level] {
+                    if matches!(file.borrow().num, 3 | 6 | 7 | 8) {
+                        files.push(file.clone());
+                    }
+                }
+            }
+            files
+        };
+
+        {
+            let current = db.current();
+            let mut current = current.borrow_mut();
+            for level in 0..NUM_LEVELS {
+                current.files[level].clear();
+            }
+            for file in files {
+                let level = match file.borrow().num {
+                    7 => 0,
+                    3 => 1,
+                    6 => 2,
+                    8 => 3,
+                    n => panic!("unexpected file number {}", n),
+                };
+                current.files[level].push(file);
+            }
+        }
+
+        db.compact_range(b"", &[0xff; 1024]).unwrap();
+
+        let current = db.current();
+        let current = current.borrow();
+        for level in 0..NUM_LEVELS {
+            for file in &current.files[level] {
+                let file = file.borrow();
+                assert!(
+                    file.num > 9,
+                    "initial file {} survived full-range compaction in level {}",
+                    file.num,
+                    level
+                );
+            }
+        }
     }
 
     #[test]
